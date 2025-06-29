@@ -24,7 +24,7 @@ class PyStorageSlot:
 
 def extract_storage(bytecode_str: str) -> List[PyStorageSlot]:
     """
-    Extract storage layout from EVM bytecode.
+    Extract storage layout from EVM bytecode
     
     Args:
         bytecode_str: Hex-encoded bytecode string (with or without 0x prefix)
@@ -33,8 +33,7 @@ def extract_storage(bytecode_str: str) -> List[PyStorageSlot]:
         List of PyStorageSlot objects representing the storage layout
         
     Raises:
-        ValueError: If bytecode is invalid or cannot be decoded
-        RuntimeError: If analysis fails or times out
+        RuntimeError: If bytecode is invalid, analysis fails, or times out
         
     Example:
         >>> bytecode = "0x60806040..."
