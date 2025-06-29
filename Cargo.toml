@@ -1,8 +1,8 @@
 # The package section specifies metadata and configuration for the entire package.
 [package]
 # Basic metadata for the package.
-name = "storage-layout-extractor"
-version = "0.5.0"
+name = "storage_layout_extractor"
+version = "0.5.4"
 homepage = "https://github.com/smlxlio/storage-layout-extractor"
 repository = "https://github.com/smlxlio/storage-layout-extractor"
 license-file = "LICENSE"
@@ -25,6 +25,11 @@ rust-version = "1.71.0"
 # Prevent publishing by accident.
 publish = false
 
+# Configure the library to build as a Python extension module
+[lib]
+name = "storage_layout_extractor"
+crate-type = ["cdylib"]
+
 # Build dependencies.
 [dependencies]
 bimap = "0.6.3"
@@ -38,6 +43,9 @@ serde = { version = "1.0.180", features = ["derive"] }
 sha3 = "0.10.8"
 thiserror = "1.0.44"
 uuid = { version = "1.4.1", features = ["v4", "fast-rng", "macro-diagnostics"] }
+pyo3 = { version = "0.19", features = ["extension-module"] }
+pyo3-asyncio = { version = "0.19", features = ["tokio-runtime"] }
+tokio = { version = "1", features = ["full"] }
 
 # Dev dependencies.
 #

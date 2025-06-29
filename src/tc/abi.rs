@@ -133,6 +133,32 @@ impl AbiType {
     }
 }
 
+impl AbiType {
+    pub fn to_solidity_type(&self) -> String {
+        match self {
+            AbiType::Any => "unknown".to_string(),
+            AbiType::Number { size } => format!("uint{}", size.unwrap_or(256)),
+            AbiType::UInt { size } => format!("uint{}", size.unwrap_or(256)),
+            AbiType::Int { size } => format!("int{}", size.unwrap_or(256)),
+            AbiType::Address => "address".to_string(),
+            AbiType::Selector => "bytes4".to_string(),
+            AbiType::Function => "bytes24".to_string(),
+            AbiType::Bool => "bool".to_string(),
+            AbiType::Array { size, tp } => format!("{}[{}]", tp.to_solidity_type(), size),
+            AbiType::Bytes { length } => format!("bytes{}", length.unwrap_or(32)),
+            AbiType::Bits { length } => format!("bytes{}", (length.unwrap_or(256) + 7) / 8),
+            AbiType::DynArray { tp } => format!("{}[]", tp.to_solidity_type()),
+            AbiType::DynBytes => "string".to_string(),
+            AbiType::Mapping { key_type, value_type } => format!("mapping({} => {})", key_type.to_solidity_type(), value_type.to_solidity_type()),
+            AbiType::Struct { elements } => {
+                "struct".to_string()
+            },
+            AbiType::InfiniteType | AbiType::ConflictedType { .. } => "unknown".to_string(),
+        }
+    }
+}
+
+
 /// An element of a struct in the ABI.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]

@@ -2,7 +2,7 @@
 
 use std::{
     cmp::Ordering,
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
 };
 
 use ethnum::U256;
@@ -34,6 +34,12 @@ pub struct U256Wrapper(pub U256);
 impl Debug for U256Wrapper {
     /// The wrapper has absolutely no semantic meaning, so we print the
     /// underlying value for the debug representation.
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Display for U256Wrapper {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }

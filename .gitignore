@@ -13,3 +13,5 @@ Cargo.lock
 
 # JetBrains IDEs store their per-project configuration in this directory. It shouldn't be checked in.
 .idea
+
+.DS_Store
