@@ -5,7 +5,7 @@ name = "storage_layout_extractor"
 version = "0.5.4"
 homepage = "https://github.com/smlxlio/storage-layout-extractor"
 repository = "https://github.com/smlxlio/storage-layout-extractor"
-license-file = "LICENSE"
+license = "AGPL-3.0-or-later"
 
 # More detailed metadata specification.
 authors = ["smlXL"]
