@@ -26,6 +26,8 @@ use crate::extractor::{
 };
 use crate as sle;
 use crate::layout::StorageSlot;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 #[pyclass]
@@ -68,15 +70,13 @@ fn storage_layout_extractor(_py: Python, m: &PyModule) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn extract_storage(bytecode_str: String) -> PyResult<Vec<PyStorageSlot>> {
-    // Strip 0x prefix if present
+#[pyo3(signature = (bytecode_str, timeout_secs=10))]
+fn extract_storage(bytecode_str: String, timeout_secs: Option<u64>) -> PyResult<Vec<PyStorageSlot>> {
     let bytecode_str = bytecode_str.strip_prefix("0x").unwrap_or(&bytecode_str);
     
-    // Decode the hexadecimal string to bytes
     let bytes = hex::decode(bytecode_str)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to decode bytecode: {}", e)))?;
 
-    // Construct a Contract object and perform the analysis
     let contract = Contract::new(
         bytes,
         Chain::Ethereum {
@@ -84,44 +84,63 @@ fn extract_storage(bytecode_str: String) -> PyResult<Vec<PyStorageSlot>> {
         },
     );
 
-    // Create a new tokio runtime and block on the async function
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create runtime: {}", e)))?;
+    let timeout = timeout_secs.unwrap_or(10);
+    let (tx, rx) = mpsc::channel();
     
-    let result = runtime.block_on(async move {
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            tokio::task::spawn_blocking(move || {
-                sle::new(
-                    contract,
-                    vm::Config::default(),
-                    tc::Config::default(),
-                    watchdog::LazyWatchdog.in_rc(),
-                )
-                .analyze()
-            }),
-        )
-        .await
+    // Isolate tokio runtime in separate OS thread to prevent multiprocessing deadlocks
+    let handle = thread::spawn(move || {
+        let runtime = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(Err(PyRuntimeError::new_err(format!("Failed to create runtime: {}", e))));
+                return;
+            }
+        };
+        
+        let result = runtime.block_on(async move {
+            tokio::time::timeout(
+                Duration::from_secs(timeout),
+                tokio::task::spawn_blocking(move || {
+                    sle::new(
+                        contract,
+                        vm::Config::default(),
+                        tc::Config::default(),
+                        watchdog::LazyWatchdog.in_rc(),
+                    )
+                    .analyze()
+                }),
+            )
+            .await
+        });
+        
+        match result {
+            Ok(Ok(Ok(layout))) => {
+                let py_slots: Vec<PyStorageSlot> = layout
+                    .slots()
+                    .iter()
+                    .map(|slot| slot.clone().into())
+                    .collect();
+                let _ = tx.send(Ok(py_slots));
+            },
+            Ok(Ok(Err(e))) => {
+                let _ = tx.send(Err(PyRuntimeError::new_err(format!("Analysis error: {:?}", e))));
+            },
+            Ok(Err(e)) => {
+                let _ = tx.send(Err(PyRuntimeError::new_err(format!("Task join error: {:?}", e))));
+            },
+            Err(_) => {
+                let _ = tx.send(Ok(Vec::new()));
+            }
+        }
     });
     
-    match result {
-        Ok(Ok(Ok(layout))) => {
-            let py_slots: Vec<PyStorageSlot> = layout
-                .slots()
-                .iter()
-                .map(|slot| slot.clone().into())
-                .collect();
-            Ok(py_slots)
-        }
-        Ok(Ok(Err(e))) => {
-            Err(PyRuntimeError::new_err(format!("Analysis failed: {}", e)))
-        }
-        Ok(Err(e)) => {
-            Err(PyRuntimeError::new_err(format!("Thread panicked: {}", e)))
-        }
+    match rx.recv_timeout(Duration::from_secs(timeout + 1)) {
+        Ok(result) => {
+            let _ = handle.join();
+            result
+        },
         Err(_) => {
-            // Timeout occurred, return empty vector
-            Ok(Vec::new())
+            Err(PyRuntimeError::new_err(format!("Storage extraction thread timed out after {} seconds", timeout + 1)))
         }
     }
 }

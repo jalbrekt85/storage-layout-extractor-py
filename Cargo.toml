@@ -2,7 +2,7 @@
 [package]
 # Basic metadata for the package.
 name = "storage_layout_extractor"
-version = "0.6.0"
+version = "0.6.1"
 homepage = "https://github.com/smlxlio/storage-layout-extractor"
 repository = "https://github.com/smlxlio/storage-layout-extractor"
 license = "AGPL-3.0-or-later"

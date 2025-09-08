@@ -22,12 +22,13 @@ class PyStorageSlot:
         """
         ...
 
-def extract_storage(bytecode_str: str) -> List[PyStorageSlot]:
+def extract_storage(bytecode_str: str, timeout_secs: int = 10) -> List[PyStorageSlot]:
     """
     Extract storage layout from EVM bytecode
     
     Args:
         bytecode_str: Hex-encoded bytecode string (with or without 0x prefix)
+        timeout_secs: Analysis timeout in seconds (default: 10)
         
     Returns:
         List of PyStorageSlot objects representing the storage layout
