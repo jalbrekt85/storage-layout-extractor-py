@@ -2,7 +2,7 @@
 [package]
 # Basic metadata for the package.
 name = "storage_layout_extractor"
-version = "0.6.1"
+version = "0.6.2"
 homepage = "https://github.com/smlxlio/storage-layout-extractor"
 repository = "https://github.com/smlxlio/storage-layout-extractor"
 license = "AGPL-3.0-or-later"
@@ -33,6 +33,7 @@ crate-type = ["cdylib"]
 # Build dependencies.
 [dependencies]
 bimap = "0.6.3"
+bincode = "1.3"
 bitvec = "1.0.1"
 derivative = "2.2.0"
 downcast-rs = "1.2.0"

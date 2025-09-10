@@ -1,5 +1,5 @@
 #![warn(clippy::all, clippy::cargo, clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)] // Allows for better API naming
+#![allow(clippy::module_name_repetitions)]
 
 pub mod constant;
 pub mod data;
@@ -12,14 +12,13 @@ pub mod tc;
 pub mod utility;
 pub mod vm;
 pub mod watchdog;
-// mod common;
 
-// Re-exports to provide the library interface.
 pub use extractor::new;
 pub use layout::StorageLayout;
 
 use pyo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
+use serde::{Serialize, Deserialize};
 use crate::extractor::{
     chain::{version::EthereumVersion, Chain},
     contract::Contract,
@@ -30,23 +29,40 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-#[pyclass]
-#[derive(Clone)]
+#[pyclass(module = "storage_layout_extractor")]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PyStorageSlot {
     #[pyo3(get, set)]
-    pub index: String,
+    pub index: u64,
     #[pyo3(get, set)]
-    pub offset: usize,
+    pub offset: u32,
     #[pyo3(get, set)]
     pub typ: String,
 }
 
 #[pymethods]
 impl PyStorageSlot {
+    #[new]
+    #[pyo3(signature = (index, offset=0, typ=String::new()))]
+    fn new(index: u64, offset: u32, typ: String) -> Self {
+        PyStorageSlot { index, offset, typ }
+    }
+    
+    fn __reduce__(&self, py: Python) -> PyResult<PyObject> {
+        let cls = py.get_type::<PyStorageSlot>();
+        let args = (self.index, self.offset, self.typ.clone());
+        Ok((cls, args).to_object(py))
+    }
+    
+    fn __repr__(&self) -> String {
+        format!("StorageSlot(index={}, offset={}, typ='{}')", 
+                self.index, self.offset, self.typ)
+    }
+    
     pub fn to_dict(&self, py: Python) -> PyResult<PyObject> {
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("index", self.index.clone())?;
-        dict.set_item("offset", self.offset.clone())?;
+        dict.set_item("index", self.index)?;
+        dict.set_item("offset", self.offset)?;
         dict.set_item("typ", self.typ.clone())?;
         Ok(dict.into())
     }
@@ -54,9 +70,12 @@ impl PyStorageSlot {
 
 impl From<StorageSlot> for PyStorageSlot {
     fn from(slot: StorageSlot) -> Self {
+        let index_str = format!("{:?}", slot.index);
+        let index = index_str.parse::<u64>().unwrap_or(0);
+        
         PyStorageSlot {
-            index: format!("{:?}", slot.index),
-            offset: slot.offset,
+            index,
+            offset: slot.offset as u32,
             typ: slot.typ.to_solidity_type(),
         }
     }
@@ -118,6 +137,10 @@ fn extract_storage(bytecode_str: String, timeout_secs: Option<u64>) -> PyResult<
                 let py_slots: Vec<PyStorageSlot> = layout
                     .slots()
                     .iter()
+                    .filter(|slot| {
+                        let typ = slot.typ.to_solidity_type();
+                        typ != "unknown"
+                    })
                     .map(|slot| slot.clone().into())
                     .collect();
                 let _ = tx.send(Ok(py_slots));
