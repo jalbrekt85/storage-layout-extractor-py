@@ -90,7 +90,7 @@ fn storage_layout_extractor(_py: Python, m: &PyModule) -> PyResult<()> {
 
 #[pyfunction]
 #[pyo3(signature = (bytecode_str, timeout_secs=10))]
-fn extract_storage(bytecode_str: String, timeout_secs: Option<u64>) -> PyResult<Vec<PyStorageSlot>> {
+fn extract_storage(py: Python<'_>, bytecode_str: String, timeout_secs: Option<u64>) -> PyResult<Vec<PyStorageSlot>> {
     let bytecode_str = bytecode_str.strip_prefix("0x").unwrap_or(&bytecode_str);
     
     let bytes = hex::decode(bytecode_str)
@@ -104,66 +104,45 @@ fn extract_storage(bytecode_str: String, timeout_secs: Option<u64>) -> PyResult<
     );
 
     let timeout = timeout_secs.unwrap_or(10);
-    let (tx, rx) = mpsc::channel();
     
-    // Isolate tokio runtime in separate OS thread to prevent multiprocessing deadlocks
-    let handle = thread::spawn(move || {
-        let runtime = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                let _ = tx.send(Err(PyRuntimeError::new_err(format!("Failed to create runtime: {}", e))));
-                return;
-            }
-        };
+    // Release the GIL during extraction to prevent multiprocessing contention
+    py.allow_threads(move || {
+        let (tx, rx) = mpsc::channel();
         
-        let result = runtime.block_on(async move {
-            tokio::time::timeout(
-                Duration::from_secs(timeout),
-                tokio::task::spawn_blocking(move || {
-                    sle::new(
-                        contract,
-                        vm::Config::default(),
-                        tc::Config::default(),
-                        watchdog::LazyWatchdog.in_rc(),
-                    )
-                    .analyze()
-                }),
+        // Run extraction in separate thread for timeout control
+        thread::spawn(move || {
+            let result = sle::new(
+                contract,
+                vm::Config::default(),
+                tc::Config::default(),
+                watchdog::LazyWatchdog.in_rc(),
             )
-            .await
+            .analyze();
+            
+            match result {
+                Ok(layout) => {
+                    let py_slots: Vec<PyStorageSlot> = layout
+                        .slots()
+                        .iter()
+                        .filter(|slot| {
+                            let typ = slot.typ.to_solidity_type();
+                            typ != "unknown"
+                        })
+                        .map(|slot| slot.clone().into())
+                        .collect();
+                    let _ = tx.send(Ok(py_slots));
+                },
+                Err(e) => {
+                    let _ = tx.send(Err(PyRuntimeError::new_err(format!("Analysis error: {:?}", e))));
+                }
+            }
         });
         
-        match result {
-            Ok(Ok(Ok(layout))) => {
-                let py_slots: Vec<PyStorageSlot> = layout
-                    .slots()
-                    .iter()
-                    .filter(|slot| {
-                        let typ = slot.typ.to_solidity_type();
-                        typ != "unknown"
-                    })
-                    .map(|slot| slot.clone().into())
-                    .collect();
-                let _ = tx.send(Ok(py_slots));
-            },
-            Ok(Ok(Err(e))) => {
-                let _ = tx.send(Err(PyRuntimeError::new_err(format!("Analysis error: {:?}", e))));
-            },
-            Ok(Err(e)) => {
-                let _ = tx.send(Err(PyRuntimeError::new_err(format!("Task join error: {:?}", e))));
-            },
+        match rx.recv_timeout(Duration::from_secs(timeout + 1)) {
+            Ok(result) => result,
             Err(_) => {
-                let _ = tx.send(Ok(Vec::new()));
+                Err(PyRuntimeError::new_err(format!("Storage extraction thread timed out after {} seconds", timeout + 1)))
             }
         }
-    });
-    
-    match rx.recv_timeout(Duration::from_secs(timeout + 1)) {
-        Ok(result) => {
-            let _ = handle.join();
-            result
-        },
-        Err(_) => {
-            Err(PyRuntimeError::new_err(format!("Storage extraction thread timed out after {} seconds", timeout + 1)))
-        }
-    }
+    })
 }

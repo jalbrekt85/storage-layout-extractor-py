@@ -2,10 +2,11 @@
 //! [`SLOT_COUNT`] storage slot indices in order to make the recognition of
 //! dynamic array accesses easier.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use bimap::BiMap;
 use ethnum::U256;
+use once_cell::sync::Lazy;
 use sha3::{Digest, Keccak256};
 
 use crate::{
@@ -16,6 +17,11 @@ use crate::{
 /// The number of storage indices for which hashes will be generated (and hence
 /// recognised).
 pub const SLOT_COUNT: usize = 10000;
+
+/// Global cache of slot hashes computed once and shared across all threads (no lock needed - read only)
+static GLOBAL_SLOT_HASHES: Lazy<Arc<BiMap<U256, usize>>> = Lazy::new(|| {
+    Arc::new(StorageSlotHashes::make_hashes(SLOT_COUNT))
+});
 
 /// This pass detects and lifts expressions that appear to be the hashes of the
 /// first [`SLOT_COUNT`] storage slot indices.
@@ -32,20 +38,20 @@ pub const SLOT_COUNT: usize = 10000;
 /// - `C` is the sha3 hash of one of the first [`SLOT_COUNT`] integers.
 #[derive(Clone, Debug)]
 pub struct StorageSlotHashes {
-    hashes: Arc<RwLock<BiMap<U256, usize>>>,
+    hashes: Arc<BiMap<U256, usize>>,
 }
 
 impl StorageSlotHashes {
     /// Creates a new instance of the slot hashes lifting pass.
     #[must_use]
     pub fn new() -> Box<Self> {
-        let hashes = Arc::new(RwLock::new(Self::make_hashes(SLOT_COUNT)));
-        Self::new_with_hashes(hashes)
+        // Use the global shared cache instead of creating new hashes every time
+        Self::new_with_hashes(GLOBAL_SLOT_HASHES.clone())
     }
 
     // Creates a new instance with the provided hashes
     #[must_use]
-    pub fn new_with_hashes(hashes: impl Into<Arc<RwLock<BiMap<U256, usize>>>>) -> Box<Self> {
+    pub fn new_with_hashes(hashes: impl Into<Arc<BiMap<U256, usize>>>) -> Box<Self> {
         Box::new(Self {
             hashes: hashes.into(),
         })
@@ -89,22 +95,17 @@ impl Lift for StorageSlotHashes {
 
             // Now we can look up the hash we found, and convert it to the `Sha3` of a known
             // value if it is one.
-            match hashes.read() {
-                Ok(hashes) => {
-                    if let Some(slot_index) = hashes.get_by_left(&known_value.value_le()) {
-                        let data = RSV::new_known_value(
-                            value_clone.instruction_pointer(),
-                            KnownWord::from(*slot_index),
-                            value_clone.provenance(),
-                            None,
-                        );
+            if let Some(slot_index) = hashes.get_by_left(&known_value.value_le()) {
+                let data = RSV::new_known_value(
+                    value_clone.instruction_pointer(),
+                    KnownWord::from(*slot_index),
+                    value_clone.provenance(),
+                    None,
+                );
 
-                        Some(RSVD::Sha3 { data })
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
+                Some(RSVD::Sha3 { data })
+            } else {
+                None
             }
         };
 
