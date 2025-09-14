@@ -16,7 +16,9 @@ pub mod watchdog;
 pub use extractor::new;
 pub use layout::StorageLayout;
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::exceptions::PyRuntimeError;
 use serde::{Serialize, Deserialize};
 use crate::extractor::{
@@ -29,6 +31,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(feature = "python")]
 #[pyclass(module = "storage_layout_extractor")]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PyStorageSlot {
@@ -40,6 +43,7 @@ pub struct PyStorageSlot {
     pub typ: String,
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyStorageSlot {
     #[new]
@@ -68,6 +72,7 @@ impl PyStorageSlot {
     }
 }
 
+#[cfg(feature = "python")]
 impl From<StorageSlot> for PyStorageSlot {
     fn from(slot: StorageSlot) -> Self {
         let index_str = format!("{:?}", slot.index);
@@ -81,6 +86,7 @@ impl From<StorageSlot> for PyStorageSlot {
     }
 }
 
+#[cfg(feature = "python")]
 #[pymodule]
 fn storage_layout_extractor(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyStorageSlot>()?;
@@ -88,6 +94,7 @@ fn storage_layout_extractor(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
+#[cfg(feature = "python")]
 #[pyfunction]
 #[pyo3(signature = (bytecode_str, timeout_secs=10))]
 fn extract_storage(py: Python<'_>, bytecode_str: String, timeout_secs: Option<u64>) -> PyResult<Vec<PyStorageSlot>> {

@@ -9,10 +9,29 @@ from typing import List, Dict, Any
 
 class PyStorageSlot:
     """Represents a storage slot in a contract's storage layout."""
-    index: str
+    index: int
     offset: int
     typ: str
-    
+
+    def __init__(self, index: int, offset: int = 0, typ: str = "") -> None:
+        """
+        Initialize a PyStorageSlot.
+
+        Args:
+            index: The storage slot index
+            offset: The offset within the slot (default: 0)
+            typ: The Solidity type of the storage (default: "")
+        """
+        ...
+
+    def __repr__(self) -> str:
+        """Return string representation of the storage slot."""
+        ...
+
+    def __reduce__(self) -> tuple:
+        """Support for pickle serialization."""
+        ...
+
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert the storage slot to a dictionary representation.
