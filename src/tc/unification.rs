@@ -90,13 +90,20 @@ pub fn unify(state: &mut TypeCheckerState, watchdog: &DynWatchdog) -> Result<()>
 
             // If there is more than one expression, this will execute, and fold over them
             for expression in inferred_expressions {
+                // Check watchdog before heavy operation
+                counter += 1;
+                if counter % polling_interval == 0 && watchdog.should_stop() {
+                    let location = state.value_unchecked(ty_var).instruction_pointer();
+                    Err(Error::StoppedByWatchdog).locate(location)?;
+                }
+
                 made_progress = true;
                 let Merge {
                     expression,
                     equalities,
                     judgements,
                     ty_vars,
-                } = merge(current.clone(), expression, ty_var, state);
+                } = merge(current.clone(), expression, ty_var, state, watchdog, &mut counter, polling_interval)?;
                 current = expression;
                 all_equalities.extend(equalities);
                 all_judgements.extend(judgements);
@@ -113,18 +120,33 @@ pub fn unify(state: &mut TypeCheckerState, watchdog: &DynWatchdog) -> Result<()>
         // When we get to the end of that loop, we need to insert the new type variables
         // into the forest so we can add any inferences involving them
         for var in all_new_ty_vars {
+            counter += 1;
+            if counter % polling_interval == 0 && watchdog.should_stop() {
+                let location = state.value_unchecked(var).instruction_pointer();
+                Err(Error::StoppedByWatchdog).locate(location)?;
+            }
             forest.insert(var);
         }
 
         // When we get to the end of that loop, we need to compute the unions of
         // the variables with their new associated inferences
         for Equality { left, right } in all_equalities {
+            counter += 1;
+            if counter % polling_interval == 0 && watchdog.should_stop() {
+                let location = state.value_unchecked(left).instruction_pointer();
+                Err(Error::StoppedByWatchdog).locate(location)?;
+            }
             forest.union(&left, &right);
         }
 
         // When we get to the end of that loop, we need to add any new typing judgements
         // to the state to continue computation
         for Judgement { tv, expr } in all_judgements {
+            counter += 1;
+            if counter % polling_interval == 0 && watchdog.should_stop() {
+                let location = state.value_unchecked(tv).instruction_pointer();
+                Err(Error::StoppedByWatchdog).locate(location)?;
+            }
             forest.add_data(&tv, InferenceSet::from([expr]));
         }
 
@@ -149,11 +171,25 @@ pub fn unify(state: &mut TypeCheckerState, watchdog: &DynWatchdog) -> Result<()>
 /// unification.
 #[allow(clippy::match_same_arms)] // The ordering of the arms matters
 #[allow(clippy::too_many_lines)] // It needs to remain one function
-#[must_use]
-pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheckerState) -> Merge {
+pub fn merge(
+    left: TE,
+    right: TE,
+    parent_tv: TypeVariable,
+    state: &mut TypeCheckerState,
+    watchdog: &DynWatchdog,
+    counter: &mut usize,
+    polling_interval: usize,
+) -> Result<Merge> {
+    // Increment and check counter
+    *counter += 1;
+    if *counter % polling_interval == 0 && watchdog.should_stop() {
+        let location = state.value_unchecked(parent_tv).instruction_pointer();
+        Err(Error::StoppedByWatchdog).locate(location)?;
+    }
+
     // If they are equal there's no combining to do
     if left == right {
-        return Merge::expression(left);
+        return Ok(Merge::expression(left));
     }
 
     match (&left, &right) {
@@ -170,10 +206,10 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
 
         // Combining a conflict with anything is another conflict that propagates information
         (TE::Conflict { .. }, _) => {
-            Merge::expression(left.conflict_with(right, "Conflicts always conflict"))
+            Ok(Merge::expression(left.conflict_with(right, "Conflicts always conflict")))
         }
         (_, TE::Conflict { .. }) => {
-            Merge::expression(right.conflict_with(left, "Conflicts always conflict"))
+            Ok(Merge::expression(right.conflict_with(left, "Conflicts always conflict")))
         }
 
         // Combining words with words is complex
@@ -191,11 +227,11 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
             let width = match (width_l, width_r) {
                 (Some(l), Some(r)) if l == r => Some(*l),
                 (Some(_), Some(_)) => {
-                    return Merge::expression(TE::conflict(
+                    return Ok(Merge::expression(TE::conflict(
                         left,
                         right,
                         "Disagreeing numeric widths",
-                    ));
+                    )));
                 }
                 (Some(l), _) => Some(*l),
                 (_, Some(r)) => Some(*r),
@@ -204,33 +240,33 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
 
             // We need to merge the usages
             let Some(usage) = usage_l.merge(*usage_r) else {
-                return Merge::expression(TE::conflict(left, right, "Conflicting word usages"));
+                return Ok(Merge::expression(TE::conflict(left, right, "Conflicting word usages")));
             };
 
-            Merge::expression(TE::word(width, usage))
+            Ok(Merge::expression(TE::word(width, usage)))
         }
 
         // To combine bytes with words we delegate
-        (TE::Word { .. }, TE::Bytes) => merge(right, left, parent_tv, state),
+        (TE::Word { .. }, TE::Bytes) => merge(right, left, parent_tv, state, watchdog, counter, polling_interval),
 
         // They actually combine to be bytes as long as the word is not signed
         (TE::Bytes, TE::Word { usage, .. }) if !usage.is_definitely_signed() => {
-            Merge::expression(TE::Bytes)
+            Ok(Merge::expression(TE::Bytes))
         }
 
         // Bytes are just a kind of dynamic array
         (TE::DynamicArray { .. }, TE::Bytes) | (TE::Bytes, TE::DynamicArray { .. }) => {
-            Merge::expression(TE::Bytes)
+            Ok(Merge::expression(TE::Bytes))
         }
 
         // To combine a dynamic array with a packed we delegate
         (TE::DynamicArray { .. } | TE::Bytes, TE::Packed { .. }) => {
-            merge(right, left, parent_tv, state)
+            merge(right, left, parent_tv, state, watchdog, counter, polling_interval)
         }
 
         // They produce bytes when certain conditions are satisfied
         (TE::Packed { types, .. }, TE::DynamicArray { .. } | TE::Bytes) => match types.len() {
-            0 => Merge::expression(TE::Bytes),
+            0 => Ok(Merge::expression(TE::Bytes)),
             1 => {
                 // We sometimes see a packed with any of these spans
                 let t = types[0];
@@ -239,13 +275,13 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
                     || (t.offset == 1 && t.size == 7)
                     || (t.offset == 8 && t.size == 248)
                 {
-                    Merge::expression(TE::Bytes)
+                    Ok(Merge::expression(TE::Bytes))
                 } else {
-                    Merge::expression(TE::conflict(
+                    Ok(Merge::expression(TE::conflict(
                         left,
                         right,
                         "Incompatible packed encoding and dynamic array",
-                    ))
+                    )))
                 }
             }
             2 => {
@@ -258,13 +294,13 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
                     || (fst.offset == 0 && fst.size == 1 && snd.offset == 8 && snd.size == 248)
                     || (fst.offset == 1 && fst.size == 7 && snd.offset == 8 && snd.size == 248)
                 {
-                    Merge::expression(TE::Bytes)
+                    Ok(Merge::expression(TE::Bytes))
                 } else {
-                    Merge::expression(TE::conflict(
+                    Ok(Merge::expression(TE::conflict(
                         left,
                         right,
                         "Incompatible packed encoding and bytes",
-                    ))
+                    )))
                 }
             }
             3 => {
@@ -281,38 +317,38 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
                     && thd.offset == 8
                     && thd.size == 248
                 {
-                    Merge::expression(TE::Bytes)
+                    Ok(Merge::expression(TE::Bytes))
                 } else {
-                    Merge::expression(TE::conflict(
+                    Ok(Merge::expression(TE::conflict(
                         left,
                         right,
                         "Incompatible packed encoding and dynamic array",
-                    ))
+                    )))
                 }
             }
-            _ => Merge::expression(TE::conflict(
+            _ => Ok(Merge::expression(TE::conflict(
                 left,
                 right,
                 "Incompatible packed encoding and dynamic array",
-            )),
+            ))),
         },
 
         // To combine a word with a dynamic array we delegate
-        (TE::Word { .. }, TE::DynamicArray { .. }) => merge(right, left, parent_tv, state),
+        (TE::Word { .. }, TE::DynamicArray { .. }) => merge(right, left, parent_tv, state, watchdog, counter, polling_interval),
 
         // They produce a dynamic array as long as the word is not signed
         (TE::DynamicArray { .. }, TE::Word { usage, .. }) => {
-            Merge::expression(if usage.is_definitely_signed() {
+            Ok(Merge::expression(if usage.is_definitely_signed() {
                 TE::conflict(left, right, "Dynamic arrays cannot have signed length")
             } else {
                 left
-            })
+            }))
         }
 
         // Dynamic arrays can combine with dynamic arrays
         (TE::DynamicArray { element: element_l }, TE::DynamicArray { element: element_r }) => {
             let equalities = vec![Equality::new(*element_l, *element_r)];
-            Merge::equalities(left, equalities)
+            Ok(Merge::equalities(left, equalities))
         }
 
         // Fixed arrays can combine with fixed arrays
@@ -328,13 +364,13 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
         ) => {
             if length_l == length_r {
                 let equalities = vec![Equality::new(*element_l, *element_r)];
-                Merge::equalities(left, equalities)
+                Ok(Merge::equalities(left, equalities))
             } else {
-                Merge::expression(TE::conflict(
+                Ok(Merge::expression(TE::conflict(
                     left,
                     right,
                     "Fixed arrays have different lengths",
-                ))
+                )))
             }
         }
 
@@ -355,7 +391,7 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
                 Equality::new(*key_l, *key_r),
                 Equality::new(*value_l, *value_r),
             ];
-            Merge::equalities(left, equalities)
+            Ok(Merge::equalities(left, equalities))
         }
 
         // Packed encodings can combine with packed encodings
@@ -372,16 +408,16 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
             // Bail if either side is empty
             let is_struct = *is_struct_r || *is_struct_l;
             if types_l.is_empty() {
-                return Merge::expression(TE::Packed {
+                return Ok(Merge::expression(TE::Packed {
                     types: types_r.clone(),
                     is_struct,
-                });
+                }));
             }
             if types_r.is_empty() {
-                return Merge::expression(TE::Packed {
+                return Ok(Merge::expression(TE::Packed {
                     types: types_l.clone(),
                     is_struct,
-                });
+                }));
             }
 
             // First, we work out all of the word boundaries within the two spans and create
@@ -467,15 +503,15 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
             };
 
             // And write all of the new stuff out
-            Merge::new(output_expr, equalities, inferences, new_ty_vars)
+            Ok(Merge::new(output_expr, equalities, inferences, new_ty_vars))
         }
 
         // Packed encodings can also combine with words
-        (TE::Word { .. }, TE::Packed { .. }) => merge(right, left, parent_tv, state),
+        (TE::Word { .. }, TE::Packed { .. }) => merge(right, left, parent_tv, state, watchdog, counter, polling_interval),
         (TE::Packed { types, .. }, TE::Word { width, usage }) => {
             // If we have no spans, things are just the word
             if types.is_empty() {
-                return Merge::expression(right);
+                return Ok(Merge::expression(right));
             }
 
             match usage {
@@ -483,11 +519,11 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
                     match width {
                         Some(w) if *w == WORD_SIZE_BITS => {
                             // Here it is either of unknown width or full width, so we throw it away
-                            Merge::expression(left)
+                            Ok(Merge::expression(left))
                         }
                         None => {
                             // Here it is either of unknown width or full width, so we throw it away
-                            Merge::expression(left)
+                            Ok(Merge::expression(left))
                         }
                         Some(w) => {
                             // In this case, we need to push the word further down
@@ -499,7 +535,7 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
                             let judgements = vec![new_packed];
                             let new_vars = vec![fresh_ty_var_for_right];
 
-                            Merge::new(left, Vec::new(), judgements, new_vars)
+                            Ok(Merge::new(left, Vec::new(), judgements, new_vars))
                         }
                     }
                 }
@@ -509,28 +545,28 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
 
                         if first_span.offset == 0 {
                             if first_span.size == *w {
-                                Merge::judgements(left, vec![Judgement::new(first_span.typ, right)])
+                                Ok(Merge::judgements(left, vec![Judgement::new(first_span.typ, right)]))
                             } else {
-                                Merge::expression(TE::conflict(
+                                Ok(Merge::expression(TE::conflict(
                                     left,
                                     right,
                                     "Span in packed encoding did not match size of word",
-                                ))
+                                )))
                             }
                         } else {
-                            Merge::expression(TE::conflict(
+                            Ok(Merge::expression(TE::conflict(
                                 left,
                                 right,
                                 "Packed encoding without span at start could not be merged with \
                                  word",
-                            ))
+                            )))
                         }
                     } else {
-                        Merge::expression(TE::conflict(
+                        Ok(Merge::expression(TE::conflict(
                             left,
                             right,
                             "Packed encoding could not be merged with word",
-                        ))
+                        )))
                     }
                 }
             }
@@ -538,11 +574,11 @@ pub fn merge(left: TE, right: TE, parent_tv: TypeVariable, state: &mut TypeCheck
 
         // Everything can combine with `Any` to produce itself, as Any doesn't add information, so
         // only collapses to `Any` when combined with itself
-        (_, TE::Any) => Merge::expression(left),
-        (TE::Any, _) => Merge::expression(right),
+        (_, TE::Any) => Ok(Merge::expression(left)),
+        (TE::Any, _) => Ok(Merge::expression(right)),
 
         // Nothing else can combine and be valid, so we return a typing conflict
-        _ => Merge::expression(TE::conflict(left, right, "Incompatible inferences")),
+        _ => Ok(Merge::expression(TE::conflict(left, right, "Incompatible inferences"))),
     }
 }
 
@@ -687,13 +723,17 @@ mod test {
         // Check it does the right thing
         let result = panic::catch_unwind(|| {
             let mut state = TypeCheckerState::empty();
-            merge(inference_1.clone(), inference_2.clone(), v_2_tv, &mut state)
+            let watchdog = LazyWatchdog.in_rc();
+            let mut counter = 0;
+            merge(inference_1.clone(), inference_2.clone(), v_2_tv, &mut state, &watchdog, &mut counter, 100)
         });
         assert!(result.is_err());
 
         let result = panic::catch_unwind(|| {
             let mut state = TypeCheckerState::empty();
-            merge(inference_2, inference_1, v_2_tv, &mut state)
+            let watchdog = LazyWatchdog.in_rc();
+            let mut counter = 0;
+            merge(inference_2, inference_1, v_2_tv, &mut state, &watchdog, &mut counter, 100)
         });
         assert!(result.is_err());
     }
@@ -1428,6 +1468,77 @@ mod test {
         }
         let e3_tv_type = util::get_inference(e3_tv, state.result()).unwrap();
         assert_eq!(e3_tv_type, p1_tv_type);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_watchdog_stops_inner_loops() -> anyhow::Result<()> {
+        use std::{
+            sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc,
+            },
+            thread,
+            time::Duration,
+        };
+
+        use crate::{
+            error::unification::Error,
+            watchdog::FlagWatchdog,
+        };
+
+        // Set up the state with multiple type variables and inferences
+        let mut state = TypeCheckerState::empty();
+
+        // Create many type variables to ensure inner loops run
+        let mut vars = vec![];
+        for i in 0..1000 {
+            let v = RSV::new_value(i, Provenance::Synthetic);
+            vars.push(state.register(v));
+        }
+
+        // Add complex inferences that will cause extensive merging in inner loops
+        for i in 0..999 {
+            state.infer(vars[i], TE::eq(vars[i + 1]));
+            state.infer(vars[i], TE::unsigned_word(Some(32)));
+            state.infer(vars[i], TE::bytes(Some(32)));
+            // Add packed encodings to create more complex merges
+            if i % 2 == 0 && i + 2 < 999 {
+                state.infer(vars[i], TE::packed_of(vec![
+                    Span::new(vars[i + 1], 0, 16),
+                    Span::new(vars[i + 2], 16, 16),
+                ]));
+            }
+        }
+
+        // Create a watchdog that triggers very quickly
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = Arc::clone(&stop_flag);
+
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(1));
+            stop_flag_clone.store(true, Ordering::Relaxed);
+        });
+
+        let watchdog = FlagWatchdog::new(stop_flag)
+            .polling_every(1) // Check every iteration
+            .in_rc();
+
+        // Run unification - should be stopped by watchdog
+        let result = unify(&mut state, &watchdog);
+
+        // Wait a bit to ensure the watchdog triggers
+        thread::sleep(Duration::from_millis(50));
+
+        // Should be stopped by watchdog
+        assert!(result.is_err());
+        if let Err(errors) = result {
+            let error_found = errors.payloads().iter().any(|e| {
+                matches!(e.payload, Error::StoppedByWatchdog)
+            });
+            assert!(error_found, "Expected StoppedByWatchdog error");
+        }
 
         Ok(())
     }
